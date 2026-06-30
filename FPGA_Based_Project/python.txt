@@ -1,0 +1,228 @@
+"""
+road_hazard_transmitter.py
+==========================
+Python Pulse Generator & UART Transmitter
+Project: FPGA-Based Road Hazard Classification & Servo Speed Control
+Board  : AT-STLN-ARTIX7-001 (XC7A35T-FTG256-1)
+
+Requirements:
+    pip install pyserial
+
+Usage:
+    python road_hazard_transmitter.py
+"""
+
+import serial
+import serial.tools.list_ports
+import time
+import sys
+import threading
+
+# ---- Configuration ----
+BAUD_RATE    = 115200
+PACKET_DELAY = 0.1
+COM_PORT     = "COM5" 
+
+PATTERNS = {
+    'N': {
+        'name'   : 'Normal Road',
+        'packet' : [0x01, 0x01, 0x01, 0x01],
+        'symbol' : 'N',
+        'color'  : '\033[92m'
+    },
+    'H': {
+        'name'   : 'Speed Hump',
+        'packet' : [0x01, 0x19, 0x19, 0x01],
+        'symbol' : 'H',
+        'color'  : '\033[93m'
+    },
+    'P': {
+        'name'   : 'Pothole',
+        'packet' : [0x01, 0xFF, 0x01, 0xFF],
+        'symbol' : 'P',
+        'color'  : '\033[91m'
+    }
+}
+
+RESET = '\033[0m'
+BOLD  = '\033[1m'
+
+
+def list_com_ports():
+    ports = serial.tools.list_ports.comports()
+    if not ports:
+        print("  No serial ports found. Check USB connection.")
+        return []
+    print(f"\n{BOLD}Available COM Ports:{RESET}")
+    for i, p in enumerate(ports):
+        print(f"  [{i+1}] {p.device:15s} — {p.description}")
+    return [p.device for p in ports]
+
+
+def select_port():
+    ports = list_com_ports()
+    if not ports:
+        sys.exit(1)
+
+    # If only one port, auto select
+    if len(ports) == 1:
+        print(f"\nAuto-selecting only available port: {BOLD}{ports[0]}{RESET}")
+        return ports[0]
+
+    # Let user pick by number or type port name
+    print(f"\nEnter port NUMBER from list above")
+    print(f"OR type port name directly (e.g. COM5 or /dev/ttyUSB0)")
+    choice = input("Your choice: ").strip()
+
+    # Check if user entered a number
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(ports):
+            print(f"Selected: {BOLD}{ports[idx]}{RESET}")
+            return ports[idx]
+        else:
+            print(f"Invalid number. Please enter 1 to {len(ports)}")
+            return select_port()
+
+    # User typed port name directly
+    if choice.upper() in [p.upper() for p in ports]:
+        return choice
+    else:
+        print(f"Warning: '{choice}' not found in list, trying anyway...")
+        return choice
+
+
+def send_packet(ser, pattern_key):
+    packet = bytes(PATTERNS[pattern_key]['packet'])
+    ser.write(packet)
+
+
+def print_status(pattern_key, packet_count):
+    p = PATTERNS[pattern_key]
+    bar = '█' * (packet_count % 20 + 1)
+    print(f"\r{p['color']}{BOLD}[{p['symbol']}] {p['name']:15s}{RESET} "
+          f"Packets sent: {packet_count:6d}  {bar}          ", end='', flush=True)
+
+
+def interactive_menu(ser):
+    current   = 'N'
+    pkt_count = 0
+    stop_flag = threading.Event()
+
+    def sender_thread():
+        nonlocal pkt_count
+        while not stop_flag.is_set():
+            send_packet(ser, current)
+            pkt_count += 1
+            print_status(current, pkt_count)
+            time.sleep(PACKET_DELAY)
+
+    t = threading.Thread(target=sender_thread, daemon=True)
+    t.start()
+
+    print(f"\n{BOLD}=== Road Hazard Transmitter ==={RESET}")
+    print(f"  {PATTERNS['N']['color']}N + Enter{RESET} — Normal Road")
+    print(f"  {PATTERNS['H']['color']}H + Enter{RESET} — Speed Hump")
+    print(f"  {PATTERNS['P']['color']}P + Enter{RESET} — Pothole")
+    print(f"  Q + Enter — Quit\n")
+    print("Transmitting Normal Road by default...\n")
+
+    try:
+        while True:
+            key = input().strip().upper()
+            if key in PATTERNS:
+                current   = key
+                pkt_count = 0
+                print(f"\n\nSwitched to: "
+                      f"{PATTERNS[key]['color']}{BOLD}{PATTERNS[key]['name']}{RESET}\n")
+            elif key == 'Q':
+                print("\nQuitting...")
+                stop_flag.set()
+                break
+            else:
+                print(f"  Unknown key '{key}'. Use N, H, P, or Q.")
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+        stop_flag.set()
+
+
+def auto_demo(ser, cycles=3):
+    sequence = [
+        ('N', 5),
+        ('H', 5),
+        ('N', 2),
+        ('P', 5),
+        ('N', 6),
+    ]
+
+    print(f"\n{BOLD}=== Auto Demo Mode ==={RESET}")
+    print(f"Cycles: {cycles}  |  Press Ctrl+C to stop\n")
+
+    try:
+        for cycle in range(cycles):
+            print(f"\n{BOLD}--- Cycle {cycle+1} of {cycles} ---{RESET}")
+            for pattern_key, duration in sequence:
+                p = PATTERNS[pattern_key]
+                print(f"\n{p['color']}{BOLD}▶ {p['name']} "
+                      f"for {duration}s{RESET}")
+                end_time  = time.time() + duration
+                pkt_count = 0
+                while time.time() < end_time:
+                    send_packet(ser, pattern_key)
+                    pkt_count += 1
+                    print_status(pattern_key, pkt_count)
+                    time.sleep(PACKET_DELAY)
+    except KeyboardInterrupt:
+        print("\n\nDemo stopped by user.")
+
+    print("\n\nDemo complete.")
+
+
+def main():
+    print(f"\n{BOLD}Road Hazard UART Transmitter{RESET}")
+    print("=" * 40)
+    print(f"  Baud Rate  : {BAUD_RATE}")
+    print(f"  Packet Size: 4 bytes")
+    print(f"  Protocol   : 8N1 UART")
+
+    port = COM_PORT
+
+    print(f"\nOpening {BOLD}{port}{RESET} at {BAUD_RATE} baud...")
+    try:
+        ser = serial.Serial(
+            port     = port,
+            baudrate = BAUD_RATE,
+            bytesize = serial.EIGHTBITS,
+            parity   = serial.PARITY_NONE,
+            stopbits = serial.STOPBITS_ONE,
+            timeout  = 1
+        )
+    except serial.SerialException as e:
+        print(f"\n{BOLD}ERROR:{RESET} Cannot open port — {e}")
+        print("Check: Is the USB adapter plugged in? Is the port correct?")
+        sys.exit(1)
+
+    if not ser.is_open:
+        print("ERROR: Port did not open.")
+        sys.exit(1)
+
+    print(f"Port opened successfully!\n")
+    time.sleep(0.5)
+
+    print(f"{BOLD}Select Mode:{RESET}")
+    print("  1 — Interactive (you press N / H / P manually)")
+    print("  2 — Auto Demo   (cycles automatically)")
+    mode = input("\nChoice [1/2]: ").strip()
+
+    try:
+        if mode == '2':
+            auto_demo(ser)
+        else:
+            interactive_menu(ser)
+    finally:
+        ser.close()
+        print(f"\nPort {port} closed. Goodbye!")
+
+
+if __name__ == '__main__':
+    main()

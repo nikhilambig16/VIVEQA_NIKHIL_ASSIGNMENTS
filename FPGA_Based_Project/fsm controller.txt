@@ -1,0 +1,119 @@
+// ============================================================
+// Module: fsm_controller
+// Description: Main FSM for road hazard adaptive speed control.
+//   States: NORMAL -> HUMP/POTHOLE -> RECOVERY -> NORMAL
+//   Recovery delay: 4 seconds @ 24 MHz
+// ============================================================
+
+module fsm_controller (
+    input  wire       clk,
+    input  wire       rst,
+    input  wire [1:0] road_class,    // From hazard_classifier
+    input  wire       class_valid,   // Pulse when new class ready
+    output reg  [1:0] speed_sel,     // To pwm_servo (00=NORMAL,01=MEDIUM,10=SLOW)
+    output reg  [1:0] display_sel    // To 7-seg driver (00=N,01=H,10=P)
+);
+
+    // States
+    localparam S_NORMAL   = 2'd0;
+    localparam S_HUMP     = 2'd1;
+    localparam S_POTHOLE  = 2'd2;
+    localparam S_RECOVERY = 2'd3;
+
+    // Classifier output encoding
+    localparam C_NORMAL  = 2'd0;
+    localparam C_HUMP    = 2'd1;
+    localparam C_POTHOLE = 2'd2;
+
+    // Speed selections
+    localparam SPD_NORMAL = 2'd0;
+    localparam SPD_MEDIUM = 2'd1;
+    localparam SPD_SLOW   = 2'd2;
+
+    // Delay: 4 seconds @ 24 MHz = 96_000_000 counts
+    localparam DELAY_COUNTS = 32'd96_000_000;
+
+    reg [1:0]  state      = S_NORMAL;
+    reg [31:0] delay_cnt  = 0;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state       <= S_NORMAL;
+            delay_cnt   <= 0;
+            speed_sel   <= SPD_NORMAL;
+            display_sel <= 2'd0;
+        end else begin
+            case (state)
+                S_NORMAL: begin
+                    speed_sel   <= SPD_NORMAL;
+                    display_sel <= 2'd0;   // 'N'
+                    delay_cnt   <= 0;
+
+                    if (class_valid) begin
+                        if (road_class == C_HUMP)
+                            state <= S_HUMP;
+                        else if (road_class == C_POTHOLE)
+                            state <= S_POTHOLE;
+                    end
+                end
+
+                S_HUMP: begin
+                    speed_sel   <= SPD_MEDIUM;
+                    display_sel <= 2'd1;   // 'H'
+
+                    // New pothole detection upgrades hazard level
+                    if (class_valid && road_class == C_POTHOLE) begin
+                        state     <= S_POTHOLE;
+                        delay_cnt <= 0;
+                    end else begin
+                        if (delay_cnt >= DELAY_COUNTS - 1) begin
+                            delay_cnt <= 0;
+                            state     <= S_RECOVERY;
+                        end else begin
+                            delay_cnt <= delay_cnt + 1;
+                        end
+                    end
+                end
+
+                S_POTHOLE: begin
+                    speed_sel   <= SPD_SLOW;
+                    display_sel <= 2'd2;   // 'P'
+
+                    // New hump resets timer but keeps pothole level
+                    if (class_valid && road_class != C_NORMAL)
+                        delay_cnt <= 0;
+
+                    if (delay_cnt >= DELAY_COUNTS - 1) begin
+                        delay_cnt <= 0;
+                        state     <= S_RECOVERY;
+                    end else begin
+                        delay_cnt <= delay_cnt + 1;
+                    end
+                end
+
+                S_RECOVERY: begin
+                    speed_sel   <= SPD_NORMAL;
+                    display_sel <= 2'd0;   // 'N'
+
+                    // If new hazard comes in during recovery, re-enter hazard state
+                    if (class_valid) begin
+                        if (road_class == C_POTHOLE) begin
+                            state     <= S_POTHOLE;
+                            delay_cnt <= 0;
+                        end else if (road_class == C_HUMP) begin
+                            state     <= S_HUMP;
+                            delay_cnt <= 0;
+                        end else begin
+                            state <= S_NORMAL;
+                        end
+                    end else begin
+                        state <= S_NORMAL;
+                    end
+                end
+
+                default: state <= S_NORMAL;
+            endcase
+        end
+    end
+
+endmodule

@@ -1,0 +1,76 @@
+// ============================================================
+// Module: hazard_classifier
+// Description: Receives UART bytes, buffers 4-byte pulse
+//              pattern, classifies road condition.
+//
+// Protocol (from Python):
+//   Each packet = 4 bytes sent sequentially
+//   NORMAL  : 0x01 0x01 0x01 0x01  (all equal, low value)
+//   HUMP    : 0x01 0x08 0x08 0x01  (middle bytes elevated)
+//   POTHOLE : 0x01 0xFF 0x01 0xFF  (alternating high/low)
+//
+// Classification:
+//   If max byte > POTHOLE_THRESH  -> POTHOLE
+//   Else if max byte > HUMP_THRESH -> HUMP
+//   Else                           -> NORMAL
+// ============================================================
+
+module hazard_classifier (
+    input  wire       clk,
+    input  wire       rst,
+    input  wire [7:0] rx_data,
+    input  wire       rx_valid,
+    output reg  [1:0] road_class,   // 00=NORMAL, 01=HUMP, 10=POTHOLE
+    output reg        class_valid   // 1-cycle pulse when new classification ready
+);
+
+    // Thresholds (tunable)
+    localparam HUMP_THRESH    = 8'd20;
+    localparam POTHOLE_THRESH = 8'd100;
+    localparam PKT_LEN        = 4;    // 4 bytes per packet
+
+    localparam NORMAL  = 2'd0;
+    localparam HUMP    = 2'd1;
+    localparam POTHOLE = 2'd2;
+
+    reg [7:0] buf0, buf1, buf2, buf3;
+    reg [1:0] byte_cnt;
+    reg [7:0] peak;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            buf0       <= 0; buf1 <= 0; buf2 <= 0; buf3 <= 0;
+            byte_cnt   <= 0;
+            road_class <= NORMAL;
+            class_valid <= 0;
+            peak       <= 0;
+        end else begin
+            class_valid <= 0;
+
+            if (rx_valid) begin
+                case (byte_cnt)
+                    2'd0: begin buf0 <= rx_data; peak <= rx_data; end
+                    2'd1: begin buf1 <= rx_data; if (rx_data > peak) peak <= rx_data; end
+                    2'd2: begin buf2 <= rx_data; if (rx_data > peak) peak <= rx_data; end
+                    2'd3: begin
+                        buf3 <= rx_data;
+                        if (rx_data > peak) peak <= rx_data;
+
+                        // Classify on 4th byte
+                        if ((rx_data > POTHOLE_THRESH) || (peak > POTHOLE_THRESH))
+                            road_class <= POTHOLE;
+                        else if ((rx_data > HUMP_THRESH) || (peak > HUMP_THRESH))
+                            road_class <= HUMP;
+                        else
+                            road_class <= NORMAL;
+
+                        class_valid <= 1;
+                        peak        <= 0;
+                    end
+                endcase
+                byte_cnt <= (byte_cnt == 2'd3) ? 2'd0 : byte_cnt + 1;
+            end
+        end
+    end
+
+endmodule

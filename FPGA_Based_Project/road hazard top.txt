@@ -1,0 +1,66 @@
+// ============================================================
+// TOP MODULE: road_hazard_top (Without Servomotor)
+// Board : AT-STLN-ARTIX7-001 (XC7A35T-FTG256-1)
+// Clock : 24 MHz (Pin D13)
+// ============================================================
+
+module road_hazard_top (
+    input  wire       clk_24mhz,
+    input  wire       uart_rx,
+    output wire [2:0] led,output wire seg_din,
+output wire seg_clk,
+output wire seg_cs
+);
+
+    wire [7:0] rx_data;
+    wire       rx_valid;
+    wire [1:0] road_class;
+    wire       class_valid;
+    wire [1:0] speed_sel;
+    wire [1:0] display_sel;
+    wire       rst = 1'b0;
+
+    // UART Receiver
+    uart_rx #(.CLK_PER_BIT(208)) u_uart_rx (
+        .clk      (clk_24mhz),
+        .rst      (rst),
+        .rx       (uart_rx),
+        .rx_data  (rx_data),
+        .rx_valid (rx_valid)
+    );
+
+    // Hazard Classifier
+    hazard_classifier u_classifier (
+        .clk         (clk_24mhz),
+        .rst         (rst),
+        .rx_data     (rx_data),
+        .rx_valid    (rx_valid),
+        .road_class  (road_class),
+        .class_valid (class_valid)
+    );
+
+    // FSM Controller
+    fsm_controller u_fsm (
+        .clk         (clk_24mhz),
+        .rst         (rst),
+        .road_class  (road_class),
+        .class_valid (class_valid),
+        .speed_sel   (speed_sel),
+        .display_sel (display_sel)
+    );
+seg_display display_inst(
+
+    .clk_24mhz(clk_24mhz),
+    .display_sel(display_sel),
+
+    .seg_din(seg_din),
+    .seg_clk(seg_clk),
+    .seg_cs(seg_cs)
+
+);
+    // Status LEDs
+    assign led[0] = (display_sel == 2'd0);
+    assign led[1] = (display_sel == 2'd1);
+    assign led[2] = (display_sel == 2'd2);
+
+endmodule
