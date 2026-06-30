@@ -1,0 +1,201 @@
+`timescale 1ns / 1ps
+
+module seg_display(
+
+    input  wire       clk_24mhz,
+    input  wire [1:0] display_sel,
+
+    output reg        seg_cs  = 1'b1,
+    output reg        seg_clk = 1'b0,
+    output reg        seg_din = 1'b0
+
+);
+
+    //--------------------------------------------------
+    // Segment patterns
+    //
+    // Bit order = DP A B C D E F G
+    //
+    // NORMAL   : a,b,c,d,e,f
+    // HUMP     : a,f,g,c,d
+    // POTHOLE  : a,b,e,f,g
+    //--------------------------------------------------
+
+    localparam [7:0] PAT_NORMAL   = 8'h7E;
+    localparam [7:0] PAT_HUMP     = 8'h5B;
+    localparam [7:0] PAT_POTHOLE  = 8'h67;
+
+    reg [7:0] digit_pattern;
+
+    always @(*)
+    begin
+        case(display_sel)
+
+            2'd0:
+                digit_pattern = PAT_NORMAL;
+
+            2'd1:
+                digit_pattern = PAT_HUMP;
+
+            2'd2:
+                digit_pattern = PAT_POTHOLE;
+
+            default:
+                digit_pattern = PAT_NORMAL;
+
+        endcase
+    end
+
+
+    //--------------------------------------------------
+    // 1 MHz SPI Tick
+    //--------------------------------------------------
+
+    reg [4:0] clk_div = 0;
+
+    wire spi_tick = (clk_div == 23);
+
+    always @(posedge clk_24mhz)
+    begin
+
+        if(spi_tick)
+            clk_div <= 0;
+        else
+            clk_div <= clk_div + 1;
+
+    end
+
+
+    //--------------------------------------------------
+    // SPI Engine
+    //--------------------------------------------------
+
+    reg [5:0]  bit_state = 0;
+    reg [15:0] shift_reg = 16'd0;
+    reg [3:0]  command   = 0;
+
+    always @(posedge clk_24mhz)
+    begin
+
+        if(spi_tick)
+        begin
+
+            //------------------------------------------
+            // Load next command
+            //------------------------------------------
+
+            if(bit_state == 0)
+            begin
+
+                seg_cs  <= 1'b0;
+                seg_clk <= 1'b0;
+
+                case(command)
+
+                    //--------------------------------------------------
+                    // MAX7219 Initialization
+                    //--------------------------------------------------
+
+                    4'd0:
+                        shift_reg <= 16'h0C01;    // Shutdown = OFF
+
+                    4'd1:
+                        shift_reg <= 16'h0F00;    // Display Test OFF
+
+                    4'd2:
+                        shift_reg <= 16'h0900;    // Decode Mode OFF
+
+                    4'd3:
+                        shift_reg <= 16'h0A0F;    // Intensity = MAX
+
+                    4'd4:
+                        shift_reg <= 16'h0B03;    // Scan digits 0..3
+
+                    //--------------------------------------------------
+                    // Digit 0
+                    //--------------------------------------------------
+
+                    4'd5:
+                        shift_reg <= {8'h01,digit_pattern};
+
+                    //--------------------------------------------------
+                    // Digit 1
+                    //--------------------------------------------------
+
+                    4'd6:
+                        shift_reg <= {8'h02,digit_pattern};
+
+                    //--------------------------------------------------
+                    // Digit 2
+                    //--------------------------------------------------
+
+                    4'd7:
+                        shift_reg <= {8'h03,digit_pattern};
+
+                    //--------------------------------------------------
+                    // Digit 3
+                    //--------------------------------------------------
+
+                    4'd8:
+                        shift_reg <= {8'h04,digit_pattern};
+
+                    default:
+                        shift_reg <= {8'h01,digit_pattern};
+
+                endcase
+
+                bit_state <= 1;
+
+            end
+
+            //------------------------------------------
+            // Shift 16 bits
+            //------------------------------------------
+
+            else if(bit_state <= 32)
+            begin
+
+                if(bit_state[0])
+                begin
+
+                    seg_clk <= 0;
+                    seg_din <= shift_reg[15];
+
+                end
+
+                else
+                begin
+
+                    seg_clk   <= 1;
+                    shift_reg <= {shift_reg[14:0],1'b0};
+
+                end
+
+                bit_state <= bit_state + 1;
+
+            end
+
+            //------------------------------------------
+            // Finish transaction
+            //------------------------------------------
+
+            else
+            begin
+
+                seg_cs  <= 1;
+                seg_clk <= 0;
+
+                if(command < 8)
+                    command <= command + 1;
+                else
+                    command <= 5;      // continuously refresh digits
+
+                bit_state <= 0;
+
+            end
+
+        end
+
+    end
+
+endmodule
